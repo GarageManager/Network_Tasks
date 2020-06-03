@@ -10,9 +10,11 @@ class Traceroute:
         self.get_traceroute_path()
 
     def get_traceroute_path(self):
-        print(socket.gethostbyaddr(self.destination))
-        # client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # client.connect()
+        client = socket.socket()
+        client.sendto(b'', self.destination)
+        while True:
+            data = client.recvfrom(1024)
+            print(data)
 
 
 def main():
