@@ -5,7 +5,6 @@ import queue
 import threading
 import re
 
-IS_PRIVATE = re.compile('IANA - Private Use')
 WHOIS_SERVER = re.compile(r'whois\.[\w]+\.net')
 NETNAME = re.compile(r'netname:\s*(\S+)', re.IGNORECASE)
 ORIGIN = re.compile(r'origina?s?:\s*(\S+)', re.IGNORECASE)
@@ -45,7 +44,7 @@ class ICMP:
         checksum += self.seq_num
 
         for i in range(0, len(self.data), 2):
-            checksum += (self.data[i] << 8) + self.data[i+1]
+            checksum += (self.data[i] << 8) + self.data[i + 1]
 
         while checksum > 0xffff:
             checksum = (checksum & 0xffff) + (checksum >> 16)
@@ -63,12 +62,51 @@ class ICMP:
 
 
 class WhoIs:
+    def __init__(self, ip):
+        self.ip = ip
+
+    def get_whois_info(self):
+        server = self.get_whois_server()
+
+        if server == 'local':
+            return 'local'
+
+        return self.parse_data(self.get_data(server))
+
+    def parse_data(self, data):
+        fields = WhoIs.get_fields(data)
+
+        if not fields:
+            new_server = WHOIS_SERVER.search(data)
+
+            if not new_server:
+                return 'local'
+
+            new_data = self.get_data(new_server)
+            fields = WhoIs.get_fields(new_data)
+
+            if not fields:
+                return 'local'
+        return fields
+
     @classmethod
-    def get_data(cls, host, ip):
+    def get_fields(cls, data):
+        netname_match = NETNAME.search(data)
+        origin_match = ORIGIN.search(data)
+        country_match = COUNTRY.search(data)
+
+        if not netname_match or not origin_match or not country_match:
+            return ''
+
+        return ' '.join([netname_match.group(1),
+                        origin_match.group(1),
+                        country_match.group(1)])
+
+    def get_data(self, host):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(5.0)
+            sock.settimeout(2.0)
             sock.connect((host, 43))
-            sock.sendall(socket.gethostbyname(ip).encode() + b'\n')
+            sock.sendall(socket.gethostbyname(self.ip).encode() + b'\n')
             data = bytearray()
             while True:
                 try:
@@ -78,40 +116,14 @@ class WhoIs:
                     data.extend(raw_data)
                 except socket.timeout:
                     return
-            return data.decode()
+            return data.decode(errors='replace')
 
-    @staticmethod
-    def get_whois_info(ip):
-        server = WhoIs.get_whois_server(ip)
-
-        if server == 'local':
-            info = 'local'
-        else:
-            res = []
-            data = WhoIs.get_data(server, ip)
-
-            netname_match = NETNAME.search(data)
-            origin_match = ORIGIN.search(data)
-            country_match = COUNTRY.search(data)
-
-            if not netname_match or not origin_match or not country_match:
-                return 'local'
-
-            res.append(netname_match.group(1))
-            res.append(origin_match.group(1))
-            if country_match.group(1) != 'EU':
-                res.append(country_match.group(1))
-            info = ' '.join(res)
-
-        return info
-
-    @classmethod
-    def get_whois_server(cls, ip):
-        data = cls.get_data('whois.iana.org', ip)
-
-        if not data:
+    def get_whois_server(self):
+        if self.is_local():
             return 'local'
-        if IS_PRIVATE.search(data):
+
+        data = self.get_data('whois.iana.org')
+        if not data:
             return 'local'
 
         match = WHOIS_SERVER.search(data)
@@ -120,8 +132,8 @@ class WhoIs:
         else:
             return 'local'
 
-    @staticmethod
-    def get_info(data):
+    @classmethod
+    def get_info(cls, data):
         res = []
         netname_match = NETNAME.search(data)
         origin_match = ORIGIN.search(data)
@@ -136,8 +148,19 @@ class WhoIs:
             res.append(country_match.group(1))
         return ' '.join(res)
 
+    def is_local(self):
+        octets = list(map(int, self.ip.split('.')))
+        if (
+                octets[0] == 10 or
+                octets[0] == 172 and 16 <= octets[1] <= 31 or
+                octets[0] == 192 and octets[1] == 168 or
+                octets[0] == 100 and 64 <= octets[1] <= 127
+        ):
+            return True
+        return False
 
-class Tracert_AS:
+
+class TracertAS:
     def __init__(self, destination, ttl=30):
         self.ttl = ttl
         try:
@@ -185,16 +208,14 @@ class Tracert_AS:
 
     def print_ip_info(self):
         while self.counter < self.ttl + 1:
-            if self.path.empty():
-                continue
-            else:
+            if not self.path.empty():
                 ip = self.path.get()
                 if ip == '*':
                     print(f'{self.counter}. *\n')
                     self.counter += 1
                 else:
                     print(f'{self.counter}. {ip}.\n'
-                          f'{WhoIs.get_whois_info(ip)}\n')
+                          f'{WhoIs(ip).get_whois_info()}\n')
                     if ip == self.destination:
                         break
                     self.counter += 1
@@ -206,9 +227,10 @@ def main():
     args = arg_parser.parse_args()
 
     try:
-        Tracert_AS(args.destination, 50).get_traceroute_path()
+        TracertAS(args.destination, 50).get_traceroute_path()
     except Exception as e:
         print(str(e), file=sys.stderr)
+        exit(2)
 
 
 if __name__ == '__main__':

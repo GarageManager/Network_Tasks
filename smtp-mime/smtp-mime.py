@@ -35,6 +35,7 @@ class SMTP:
         self.recipient = recip
         self.ssl = ssl
         self.subject = subj
+        self.sender_adress = ''
 
         host = host.split(':')
         self.host_name = host[0]
@@ -68,12 +69,14 @@ class SMTP:
                 self.sock, server_hostname=self.host_name
             )
 
+        username = ''
         if self.auth:
             self.send_message('AUTH LOGIN\n')
             self.get_answers(True)
 
             print('Login: ', end='')
-            username = base64.b64encode(input().encode('utf-8'))\
+            self.sender_adress = input()
+            username = base64.b64encode(self.sender_adress.encode('utf-8'))\
                 .decode('utf-8')
             self.send_message(username + '\n')
             self.get_answers(True)
@@ -84,7 +87,7 @@ class SMTP:
             self.send_message(password + '\n')
             self.get_answers()
 
-        self.send_message(f'mail from: <{self.sender}>\n')
+        self.send_message(f'mail from: <{username}>\n')
         self.get_answers()
 
         self.send_message(f'rcpt to: <{self.recipient}>\n')
@@ -94,6 +97,7 @@ class SMTP:
         self.get_answers()
 
         data = self.create_data()
+
         self.send_message(''.join(data))
         self.get_answers()
 
@@ -103,23 +107,52 @@ class SMTP:
             sock_old.close()
 
     def create_data(self):
-        data = [
-            f'From: <{self.sender}>\n'
-            f'To: <{self.recipient}>\n'
-            f'Subject: {self.subject}\n'
-            f'Content-Type: multipart/mixed; boundary=bound\n', ]
+        body_header = f'From: =?utf-8?B?'\
+                      f'{base64.b64encode(self.sender.encode("utf-8")).decode("utf-8")}'\
+                      f'?= <{self.sender_adress}>\n'\
+                      f'To: <{self.recipient}>\n'\
+                      f'Subject: =?utf-8?B?'\
+                      f'{base64.b64encode(self.subject.encode("utf-8")).decode("utf-8")}'\
+                      f'?=\n'\
+                      f'Content-Type: multipart/mixed; boundary=bound\n\n'
+        body_data = []
 
+        body_text_header = '--bound\n' \
+                           'Content-Type: text/html; charset=utf-8\n\n'
+        body_text_data = 'Some.Text\r\n.\r\nWith.Dots.And.--bound.\n'
+
+        if '\n.\n' in body_text_data:
+            body_text_data = body_text_data.replace('\n.\n', '\n..\n')
+        if '\r\n.\r\n' in body_text_data:
+            body_text_data = body_text_data.replace('\r\n.\r\n', '\r\n..\r\n')
+
+        has_boundary_word = True
+        bound = 'bound'
+        while has_boundary_word:
+            if bound in body_text_data:
+                bound += 'd'
+            else:
+                body_text_header = body_text_header.replace('bound\n', bound + '\n')
+                body_header = body_header.replace('bound\n', bound + '\n')
+                has_boundary_word = False
+
+        body_data.extend([body_text_header, body_text_data])
+        data = self.add_images(body_data, bound)
+        data.insert(0, body_header)
+        return data
+
+    def add_images(self, data, bound):
         if self.raw_images:
             for image in self.raw_images:
                 data.append(
-                    f'--bound\n'
+                    f'--{bound}\n'
                     f'Content-Type: image/jpg\n'
                     f'Content-Transfer-Encoding: base64\n'
                     f'Content-disposition:attachment; filename="{image[0]}"\n\n'
                     f'{image[1]}\n'
                 )
-            data.append('--bound--')
-        data.append('\r\n.\n')
+            data.append(f'--{bound}--')
+        data.append('\r\n.\r\n')
 
         return data
     
@@ -158,7 +191,7 @@ def parse_args():
     parser.add_argument('--subject', default='Happy Pictures',
                         help='необязательный параметр, задающий тему письма, '
                              'по умолчанию тема “Happy Pictures”')
-    parser.add_argument('-auth', default=False, type=bool,
+    parser.add_argument('--auth', default=False, type=bool,
                         help='запрашивать ли авторизацию (по умолчанию нет), '
                              'если запрашивать, то сделать это после запуска, '
                              'без отображения пароля')
