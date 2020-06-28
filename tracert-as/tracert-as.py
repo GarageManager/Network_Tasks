@@ -81,6 +81,8 @@ class WhoIs:
 
             if not new_server:
                 return 'local'
+            else:
+                new_server = new_server.group(0)
 
             new_data = self.get_data(new_server)
             fields = WhoIs.get_fields(new_data)
